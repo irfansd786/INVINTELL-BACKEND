@@ -1,0 +1,540 @@
+// INVINTELL Enterprise Relational Database Schema
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// 1. PRODUCTS (Source of truth from CSV)
+model Product {
+  id                    String                 @id @default(uuid())
+  productId             String                 @unique // e.g. P0001 / SKU
+  name                  String                 // e.g. Groceries Item P0001
+  category              String                 // Groceries, Toys, Electronics, Furniture, Clothing
+  brand                 String?                @default("INVINTELL Standard")
+  price                 Float                  @default(0.0)
+  costPrice             Float                  @default(0.0)
+  minThreshold          Int                    @default(20)
+  maxThreshold          Int                    @default(500)
+  description           String?
+  status                String                 @default("NORMAL") // NORMAL, OUT_OF_STOCK, LOW, OVERSTOCK
+  barcode               String?                @unique // Permanent machine-readable EAN-13 barcode
+  
+  // Relations
+  inventories           InventoryRecord[]
+  sales                 SalesRecord[]
+  orderRecords          OrderRecord[]
+  forecasts             ForecastRecord[]
+  supplierProducts      SupplierProduct[]
+  purchaseOrderItems    PurchaseOrderItem[]
+  customerOrderItems    OrderItem[]
+  allocations           Allocation[]
+  pickingTasks          PickingTask[]
+  exceptions            Exception[]
+  transfers             WarehouseTransfer[]
+  batches               ProductBatch[]
+  stockMovements        StockMovement[]
+  financeTransactions   FinanceTransaction[]
+  riskAlerts            RiskAlert[]
+  cycleCountItems       CycleCountItem[]
+
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+
+  @@index([name, category, brand])
+}
+
+// 2. STORES / WAREHOUSES
+model Store {
+  id                    String                 @id @default(uuid())
+  storeId               String                 @unique // e.g. S001
+  storeCode             String                 @default("S001")
+  name                  String                 // e.g. Warehouse A (Chicago Hub)
+  region                String                 // Midwest, South, West, East
+  city                  String                 @default("Chicago")
+  state                 String                 @default("IL")
+  capacity              Int                    @default(50000)
+  manager               String                 @default("Ops Director")
+  status                String                 @default("OPERATIONAL")
+
+  // Relations
+  inventories           InventoryRecord[]
+  sales                 SalesRecord[]
+  orderRecords          OrderRecord[]
+  forecasts             ForecastRecord[]
+  purchaseOrders        PurchaseOrder[]
+  customerOrders        Order[]
+  allocations           Allocation[]
+  pickingTasks          PickingTask[]
+  exceptions            Exception[]
+  transfersFrom         WarehouseTransfer[]    @relation("TransferFrom")
+  transfersTo           WarehouseTransfer[]    @relation("TransferTo")
+  batches               ProductBatch[]
+  stockMovements        StockMovement[]
+  riskAlerts            RiskAlert[]
+  cycleCounts           CycleCount[]
+
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+}
+
+// 3. INVENTORY RECORDS (CSV Derived)
+model InventoryRecord {
+  id                    String                 @id @default(uuid())
+  date                  DateTime               @default(now())
+  storeId               String
+  store                 Store                  @relation(fields: [storeId], references: [id])
+  productId             String
+  product               Product                @relation(fields: [productId], references: [id])
+  inventoryLevel        Int                    @default(0) // Physical Stock
+  reservedQuantity      Int                    @default(0) // Stock reserved for open orders
+  damagedQuantity       Int                    @default(0) // Damaged stock
+  inTransitQuantity     Int                    @default(0) // In-transit stock
+  availableQuantity     Int                    @default(0) // Available stock (Level - Reserved - Damaged)
+  reorderLevel          Int                    @default(25)
+  status                String                 @default("NORMAL")
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+
+  @@index([storeId, productId, date])
+}
+
+// 4. SALES RECORDS (CSV Derived)
+model SalesRecord {
+  id                    String                 @id @default(uuid())
+  date                  DateTime
+  storeId               String
+  store                 Store                  @relation(fields: [storeId], references: [id])
+  productId             String
+  product               Product                @relation(fields: [productId], references: [id])
+  unitsSold             Int
+  price                 Float
+  discount              Float
+  revenue               Float
+  weatherCondition      String?
+  holidayPromotion      Boolean                @default(false)
+  competitorPricing    Float?
+  seasonality           String?
+  createdAt             DateTime               @default(now())
+
+  @@index([storeId, productId, date])
+}
+
+// 5. ORDER RECORDS (CSV Derived)
+model OrderRecord {
+  id                    String                 @id @default(uuid())
+  date                  DateTime
+  storeId               String
+  store                 Store                  @relation(fields: [storeId], references: [id])
+  productId             String
+  product               Product                @relation(fields: [productId], references: [id])
+  unitsOrdered          Int
+  status                String                 @default("PENDING")
+  createdAt             DateTime               @default(now())
+
+  @@index([storeId, productId, date])
+}
+
+// 6. FORECAST RECORDS (CSV Derived)
+model ForecastRecord {
+  id                    String                 @id @default(uuid())
+  date                  DateTime
+  storeId               String
+  store                 Store                  @relation(fields: [storeId], references: [id])
+  productId             String
+  product               Product                @relation(fields: [productId], references: [id])
+  demandForecast        Float
+  createdAt             DateTime               @default(now())
+
+  @@index([storeId, productId, date])
+}
+
+// 7. CUSTOMERS
+model Customer {
+  id                    String                 @id @default(uuid())
+  customerId            String                 @unique // e.g. CUST-1001
+  customerName          String
+  customerType          String                 @default("DISTRIBUTOR") // RETAILER, DISTRIBUTOR, WHOLESALER, BUSINESS
+  location              String
+  contact               String
+  status                String                 @default("ACTIVE")
+  orders                Order[]
+
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+}
+
+// 8. SUPPLIERS
+model Supplier {
+  id                    String                 @id @default(uuid())
+  supplierId            String                 @unique // e.g. SUP-001
+  supplierName          String
+  contact               String
+  email                 String
+  location              String
+  status                String                 @default("ACTIVE")
+  reliabilityScore      Float                  @default(98.5)
+  supplierProducts      SupplierProduct[]
+  purchaseOrders        PurchaseOrder[]
+
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+}
+
+model SupplierProduct {
+  id                    String                 @id @default(uuid())
+  supplierId            String
+  supplier              Supplier               @relation(fields: [supplierId], references: [id])
+  productId             String
+  product               Product                @relation(fields: [productId], references: [id])
+  supplierPrice         Float
+  leadTimeDays          Int                    @default(7)
+  minimumOrderQuantity  Int                    @default(50)
+  paymentTerms          String                 @default("Net 30")
+
+  createdAt             DateTime               @default(now())
+
+  @@unique([supplierId, productId])
+}
+
+// 9. PURCHASE ORDERS
+model PurchaseOrder {
+  id                    String                 @id @default(uuid())
+  purchaseOrderId       String                 @unique // e.g. PO-8001
+  supplierId            String
+  supplier              Supplier               @relation(fields: [supplierId], references: [id])
+  storeId               String
+  store                 Store                  @relation(fields: [storeId], references: [id])
+  orderDate             DateTime               @default(now())
+  expectedDeliveryDate  DateTime
+  actualDeliveryDate    DateTime?
+  status                String                 @default("PLACED") // DRAFT, PLACED, CONFIRMED, IN_TRANSIT, RECEIVED, CANCELLED
+  totalValue            Float                  @default(0.0)
+  items                 PurchaseOrderItem[]
+
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+}
+
+model PurchaseOrderItem {
+  id                    String                 @id @default(uuid())
+  purchaseOrderId       String
+  purchaseOrder         PurchaseOrder          @relation(fields: [purchaseOrderId], references: [id])
+  productId             String
+  product               Product                @relation(fields: [productId], references: [id])
+  quantity              Int
+  unitCost              Float
+  receivedQuantity      Int                    @default(0)
+
+  createdAt             DateTime               @default(now())
+}
+
+// 10. CUSTOMER B2B ORDERS & ITEMS
+model Order {
+  id                    String                 @id @default(uuid())
+  orderNumber           String                 @unique // e.g. ORD-2022-9001
+  customerId            String
+  customer              Customer               @relation(fields: [customerId], references: [id])
+  storeId               String
+  store                 Store                  @relation(fields: [storeId], references: [id])
+  orderDate             DateTime               @default(now())
+  priority              String                 @default("STANDARD") // URGENT, HIGH, STANDARD
+  status                String                 @default("PENDING") // PENDING, ALLOCATED, PICKING, PACKING, READY, DISPATCHED, FULFILLED
+  totalValue            Float                  @default(0.0)
+  expectedDispatchDate  DateTime?
+  actualDispatchDate    DateTime?
+
+  items                 OrderItem[]
+  allocations           Allocation[]
+  pickingTasks          PickingTask[]
+  packingTasks          PackingTask[]
+  dispatches            Dispatch[]
+  exceptions            Exception[]
+  financeTransactions   FinanceTransaction[]
+
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+}
+
+model OrderItem {
+  id                    String                 @id @default(uuid())
+  orderId               String
+  order                 Order                  @relation(fields: [orderId], references: [id])
+  productId             String
+  product               Product                @relation(fields: [productId], references: [id])
+  quantity              Int
+  unitPrice             Float
+  allocatedQuantity     Int                    @default(0)
+  pickedQuantity        Int                    @default(0)
+  packedQuantity        Int                    @default(0)
+
+  createdAt             DateTime               @default(now())
+}
+
+// 11. INVENTORY ALLOCATION
+model Allocation {
+  id                    String                 @id @default(uuid())
+  allocationId          String                 @unique // e.g. ALLOC-1001
+  orderId               String
+  order                 Order                  @relation(fields: [orderId], references: [id])
+  productId             String
+  product               Product                @relation(fields: [productId], references: [id])
+  storeId               String
+  store                 Store                  @relation(fields: [storeId], references: [id])
+  requestedQuantity     Int
+  allocatedQuantity     Int
+  status                String                 @default("ALLOCATED")
+
+  createdAt             DateTime               @default(now())
+}
+
+// 12. PICKING TASKS
+model PickingTask {
+  id                    String                 @id @default(uuid())
+  pickingId             String                 @unique // e.g. PK-9041
+  orderId               String
+  order                 Order                  @relation(fields: [orderId], references: [id])
+  storeId               String
+  store                 Store                  @relation(fields: [storeId], references: [id])
+  productId             String
+  product               Product                @relation(fields: [productId], references: [id])
+  quantity              Int
+  pickedQuantity        Int                    @default(0)
+  location              String                 @default("A-12-04")
+  picker                String                 @default("John Miller")
+  status                String                 @default("QUEUED") // QUEUED, IN_PROGRESS, COMPLETED, EXCEPTION
+  startedAt             DateTime?
+  completedAt           DateTime?
+
+  createdAt             DateTime               @default(now())
+}
+
+// 13. PACKING TASKS
+model PackingTask {
+  id                    String                 @id @default(uuid())
+  packingId             String                 @unique // e.g. PAC-4011
+  orderId               String
+  order                 Order                  @relation(fields: [orderId], references: [id])
+  packageType           String                 @default("LARGE_CORRUGATED")
+  totalItems            Int                    @default(1)
+  packedBy              String                 @default("Dave Evans")
+  status                String                 @default("WAITING") // WAITING, IN_PROGRESS, COMPLETED, EXCEPTION
+  packedAt              DateTime?
+
+  createdAt             DateTime               @default(now())
+}
+
+// 14. DISPATCH
+model Dispatch {
+  id                    String                 @id @default(uuid())
+  dispatchId            String                 @unique // e.g. MAN-7091
+  orderId               String
+  order                 Order                  @relation(fields: [orderId], references: [id])
+  carrier               String                 @default("FedEx Freight")
+  trackingId            String                 @default("FX-940281-US")
+  dispatchDate          DateTime               @default(now())
+  estimatedDelivery     DateTime?
+  actualDelivery        DateTime?
+  status                String                 @default("DISPATCHED") // READY, DISPATCHED, IN_TRANSIT, DELIVERED, RETURNED
+
+  createdAt             DateTime               @default(now())
+}
+
+// 15. EXCEPTIONS
+model Exception {
+  id                    String                 @id @default(uuid())
+  exceptionCode         String                 @unique // e.g. EXP-BIN-MISMATCH
+  orderId               String?
+  order                 Order?                 @relation(fields: [orderId], references: [id])
+  productId             String?
+  product               Product?               @relation(fields: [productId], references: [id])
+  storeId               String
+  store                 Store                  @relation(fields: [storeId], references: [id])
+  type                  String                 @default("SHORTAGE") // SHORTAGE, DAMAGED, QUANTITY_MISMATCH, MISSING, DELAY
+  expectedQuantity      Int                    @default(0)
+  actualQuantity        Int                    @default(0)
+  difference            Int                    @default(0)
+  severity              String                 @default("HIGH") // LOW, MEDIUM, HIGH, CRITICAL
+  description           String
+  status                String                 @default("OPEN")
+  createdAt             DateTime               @default(now())
+  resolvedAt            DateTime?
+}
+
+// 16. WAREHOUSE TRANSFERS
+model WarehouseTransfer {
+  id                    String                 @id @default(uuid())
+  transferId            String                 @unique // e.g. TR-801
+  productId             String
+  product               Product                @relation(fields: [productId], references: [id])
+  fromStoreId           String
+  fromStore             Store                  @relation("TransferFrom", fields: [fromStoreId], references: [id])
+  toStoreId             String
+  toStore               Store                  @relation("TransferTo", fields: [toStoreId], references: [id])
+  quantity              Int
+  requestedDate         DateTime               @default(now())
+  dispatchDate          DateTime?
+  receivedDate          DateTime?
+  status                String                 @default("IN_TRANSIT") // REQUESTED, APPROVED, IN_TRANSIT, RECEIVED, CANCELLED
+
+  createdAt             DateTime               @default(now())
+}
+
+// 17. PRODUCT BATCHES & EXPIRY
+model ProductBatch {
+  id                    String                 @id @default(uuid())
+  batchId               String                 @unique // e.g. BATCH-901
+  productId             String
+  product               Product                @relation(fields: [productId], references: [id])
+  storeId               String
+  store                 Store                  @relation(fields: [storeId], references: [id])
+  batchNumber           String
+  manufacturingDate     DateTime
+  expiryDate            DateTime
+  quantity              Int
+  remainingQuantity     Int
+
+  createdAt             DateTime               @default(now())
+}
+
+// 18. STOCK MOVEMENTS
+model StockMovement {
+  id                    String                 @id @default(uuid())
+  movementId            String                 @unique // e.g. MOV-1001
+  productId             String
+  product               Product                @relation(fields: [productId], references: [id])
+  storeId               String
+  store                 Store                  @relation(fields: [storeId], references: [id])
+  movementType          String                 // RECEIVED, ADJUSTMENT, RESERVED, RELEASED, TRANSFER_OUT, TRANSFER_IN, DAMAGED, PICKED, RETURNED, DISPATCHED
+  quantity              Int
+  date                  DateTime               @default(now())
+  referenceId           String?
+  reason                String?
+  userId                String?
+  createdAt             DateTime               @default(now())
+}
+
+// 19. FINANCE TRANSACTIONS
+model FinanceTransaction {
+  id                    String                 @id @default(uuid())
+  transactionId         String                 @unique // e.g. TXN-9011
+  orderId               String?
+  order                 Order?                 @relation(fields: [orderId], references: [id])
+  productId             String
+  product               Product                @relation(fields: [productId], references: [id])
+  quantity              Int
+  unitPrice             Float
+  costPrice             Float
+  discount              Float                  @default(0.0)
+  tax                   Float                  @default(0.0)
+  totalAmount           Float
+  profit                Float
+  date                  DateTime               @default(now())
+
+  createdAt             DateTime               @default(now())
+}
+
+// 20. RISK ALERTS
+model RiskAlert {
+  id                    String                 @id @default(uuid())
+  productId             String
+  product               Product                @relation(fields: [productId], references: [id])
+  storeId               String
+  store                 Store                  @relation(fields: [storeId], references: [id])
+  riskType              String                 // STOCKOUT, OVERSTOCK, DEAD_STOCK, EXPIRY_RISK, CRITICAL
+  severity              String                 // CRITICAL, HIGH, MEDIUM, LOW
+  reason                String
+  action                String
+  currentStock          Int
+  expiryDate            DateTime?
+  daysRemaining         Int?
+  salesVelocity         String?
+  suggestedDiscount     Float?
+  suggestedAction       String?
+  status                String                 @default("ACTIVE")
+
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+}
+
+// 21. USER ACCOUNTS
+model User {
+  id                    String                 @id @default(uuid())
+  firebaseUid           String                 @unique
+  name                  String
+  email                 String                 @unique
+  role                  String                 @default("STAFF") // OWNER, STAFF
+  permissions           String[]               @default([])
+  department            String?
+  warehouseId           String?
+  status                String                 @default("ACTIVE") // ACTIVE, INACTIVE
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+
+  cycleCountsCreated    CycleCount[]           @relation("CycleCountCreator")
+}
+
+// 22. CYCLE COUNTING (PHYSICAL INVENTORY AUDITING)
+model CycleCount {
+  id                    String                 @id @default(uuid())
+  countNumber           String                 @unique // e.g. CC-2026-1001
+  storeId               String
+  store                 Store                  @relation(fields: [storeId], references: [id])
+  status                String                 @default("DRAFT") // DRAFT, IN_PROGRESS, COMPLETED, CANCELLED
+  createdById           String?
+  createdBy             User?                  @relation("CycleCountCreator", fields: [createdById], references: [id])
+  startedAt             DateTime?
+  completedAt           DateTime?
+  notes                 String?
+  items                 CycleCountItem[]
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+}
+
+model CycleCountItem {
+  id                    String                 @id @default(uuid())
+  cycleCountId          String
+  cycleCount            CycleCount             @relation(fields: [cycleCountId], references: [id], onDelete: Cascade)
+  productId             String
+  product               Product                @relation(fields: [productId], references: [id])
+  expectedQuantity      Int                    @default(0)
+  countedQuantity       Int?
+  variance              Int                    @default(0)
+  status                String                 @default("PENDING") // PENDING, MATCHED, DISCREPANCY, RESOLVED
+  notes                 String?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+}
+
+// 23. SEASONAL EVENTS & DEMAND CALENDAR
+model Event {
+  id                    String                 @id @default(uuid())
+  name                  String                 // e.g. Diwali Sale, Black Friday, Q4 Peak
+  startDate             DateTime
+  endDate               DateTime
+  category              String                 @default("FESTIVAL") // FESTIVAL, HOLIDAY, PROMOTION, SEASONAL
+  description           String?
+  region                String?                @default("ALL")
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+}
+
+// 24. SYSTEM AUDIT LOGS (IMMUTABLE AUDIT TRAIL)
+model AuditLog {
+  id                    String                 @id @default(uuid())
+  userId                String?
+  userName              String?                @default("System User")
+  userRole              String?                @default("STAFF")
+  action                String                 // e.g. INVENTORY_ADJUSTMENT, ORDER_PICKING, PRODUCT_CREATED
+  entityType            String                 // e.g. Product, Inventory, Order, Staff, CycleCount
+  entityId              String?
+  description           String
+  warehouseName         String?
+  metadata              Json?
+  createdAt             DateTime               @default(now())
+
+  @@index([userId, action, entityType, createdAt])
+}
